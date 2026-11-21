@@ -221,7 +221,10 @@ export interface ApproxLocationRecord {
   updated_at: string;
 }
 
-const dataDir = path.resolve(process.cwd(), 'data');
+const isServerlessRuntime = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const dataDir = isServerlessRuntime
+  ? path.join('/tmp', 'ideabridge-data')
+  : path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
@@ -411,6 +414,16 @@ db.exec(`
     checklist_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS points_transactions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    idea_id TEXT REFERENCES ideas(id) ON DELETE SET NULL,
+    type TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    description TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
 
 // Safe migrations for existing database files
@@ -419,6 +432,10 @@ const existingUserColNames = new Set(userColumns.map((col) => col.name));
 
 if (!existingUserColNames.has('role')) {
   db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'");
+}
+if (!existingUserColNames.has('firebase_uid')) {
+  db.exec('ALTER TABLE users ADD COLUMN firebase_uid TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid) WHERE firebase_uid IS NOT NULL');
 }
 if (!existingUserColNames.has('bio')) {
   db.exec("ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''");
@@ -1195,6 +1212,126 @@ export function createUser(input: {
     throw new Error('Failed to load created user profile');
   }
   return profile;
+}
+
+export function upsertUserFromFirebase(input: {
+  uid: string;
+  email: string;
+  name?: string;
+  college?: string;
+}): PublicUserProfile {
+  const byUid = db
+    .prepare('SELECT id FROM users WHERE firebase_uid = ?')
+    .get(input.uid) as { id: string } | undefined;
+
+  if (byUid) {
+    return getUserProfileById(byUid.id)!;
+  }
+
+  const normalizedEmail = input.email.trim().toLowerCase();
+  const byEmail = db
+    .prepare('SELECT id FROM users WHERE lower(email) = lower(?)')
+    .get(normalizedEmail) as { id: string } | undefined;
+
+  if (byEmail) {
+    db.prepare('UPDATE users SET firebase_uid = ?, auth_provider = ? WHERE id = ?').run(
+      input.uid,
+      'firebase',
+      byEmail.id
+    );
+    return getUserProfileById(byEmail.id)!;
+  }
+
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const role: UserRole = isAdminEmail(normalizedEmail) ? 'admin' : 'student';
+  const safeName = (input.name && input.name.trim().length >= 2
+    ? input.name.trim()
+    : normalizedEmail.split('@')[0] || 'Student Builder'
+  ).slice(0, 80);
+  const safeCollege = (input.college && input.college.trim().length >= 2
+    ? input.college.trim()
+    : 'IdeaBridge Campus'
+  ).slice(0, 120);
+
+  db.prepare(
+    `INSERT INTO users (id, firebase_uid, email, password_hash, auth_provider, role, name, college, skills, points_balance, created_at)
+     VALUES (?, ?, ?, NULL, 'firebase', ?, ?, ?, '[]', 0, ?)`
+  ).run(id, input.uid, normalizedEmail, role, safeName, safeCollege, createdAt);
+
+  const profile = getUserProfileById(id);
+  if (!profile) {
+    throw new Error('Failed to load Firebase user profile');
+  }
+  return profile;
+}
+
+export interface PointTransactionItem {
+  id: string;
+  user_id: string;
+  idea_id: string | null;
+  type: string;
+  amount: number;
+  description: string;
+  created_at: string;
+}
+
+export function awardPoints(input: {
+  userId: string;
+  ideaId?: string | null;
+  type: 'earn_post' | 'earn_unlock' | 'portfolio_bonus' | 'bonus';
+  amount: number;
+  description: string;
+}): PointTransactionItem {
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+
+  db.exec('BEGIN');
+  try {
+    db.prepare(
+      `INSERT INTO points_transactions (id, user_id, idea_id, type, amount, description, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      input.userId,
+      input.ideaId ?? null,
+      input.type,
+      input.amount,
+      input.description.slice(0, 200),
+      createdAt
+    );
+
+    db.prepare('UPDATE users SET points_balance = points_balance + ? WHERE id = ?').run(
+      input.amount,
+      input.userId
+    );
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  return {
+    id,
+    user_id: input.userId,
+    idea_id: input.ideaId ?? null,
+    type: input.type,
+    amount: input.amount,
+    description: input.description.slice(0, 200),
+    created_at: createdAt,
+  };
+}
+
+export function listPointTransactions(userId: string): PointTransactionItem[] {
+  return db
+    .prepare(
+      `SELECT id, user_id, idea_id, type, amount, description, created_at
+       FROM points_transactions
+       WHERE user_id = ?
+       ORDER BY created_at DESC
+       LIMIT 50`
+    )
+    .all(userId) as unknown as PointTransactionItem[];
 }
 
 export function setUserRole(userId: string, role: UserRole): PublicUserProfile | null {

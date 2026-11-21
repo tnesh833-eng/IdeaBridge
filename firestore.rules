@@ -1,0 +1,172 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidSkillsList(list) {
+      return list is list && list.size() <= 15 && (list.size() == 0 || (list[0] is string && list[0].size() <= 40));
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'name', 'college', 'pointsBalance', 'ideasPosted', 'projectsBuilt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'college', 'bio', 'skills', 'pointsBalance', 'ideasPosted', 'projectsBuilt', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 80
+        && data.college is string && data.college.size() >= 2 && data.college.size() <= 120
+        && (!('bio' in data) || (data.bio is string && data.bio.size() <= 300))
+        && (!('skills' in data) || isValidSkillsList(data.skills))
+        && data.pointsBalance is int && data.pointsBalance >= 0
+        && data.ideasPosted is int && data.ideasPosted >= 0
+        && data.projectsBuilt is int && data.projectsBuilt >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 120
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidIdea(data, ideaId) {
+      return data.keys().hasAll(['id', 'authorUid', 'title', 'summary', 'domain', 'difficulty', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'authorUid', 'title', 'summary', 'domain', 'difficulty', 'status', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id == ideaId && isValidId(data.id)
+        && data.authorUid is string && isValidId(data.authorUid)
+        && data.title is string && data.title.size() >= 4 && data.title.size() <= 120
+        && data.summary is string && data.summary.size() >= 15 && data.summary.size() <= 240
+        && data.domain in ['Environment', 'Health', 'Education', 'FinTech', 'Campus Tech', 'Civic']
+        && data.difficulty in ['Beginner', 'Intermediate', 'Advanced']
+        && data.status in ['open', 'archived']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Connection test document check (client getDocFromServer probe)
+    match /test/connection {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // Public student profiles (zero PII)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isOwner(userId)
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().pointsBalance == 0
+        && incoming().ideasPosted == 0
+        && incoming().projectsBuilt == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isOwner(userId)
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().pointsBalance == existing().pointsBalance
+        && incoming().ideasPosted == existing().ideasPosted
+        && incoming().projectsBuilt == existing().projectsBuilt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'college', 'bio', 'skills', 'updatedAt']);
+
+      allow delete: if false;
+
+      // Owner-only private PII subcollection
+      match /private/{docId} {
+        allow get: if isVerifiedUser() && isOwner(userId) && isValidId(docId);
+        allow list: if isVerifiedUser() && isOwner(userId) && resource.data.uid == request.auth.uid;
+
+        allow create: if isVerifiedUser()
+          && isOwner(userId)
+          && isValidId(userId)
+          && isValidId(docId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().updatedAt == request.time;
+
+        allow update: if isVerifiedUser()
+          && isOwner(userId)
+          && isValidId(userId)
+          && isValidId(docId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+
+        allow delete: if isVerifiedUser() && isOwner(userId) && isValidId(docId);
+      }
+    }
+
+    // Ideas collection
+    match /ideas/{ideaId} {
+      allow get: if isSignedIn() && isValidId(ideaId);
+      allow list: if isSignedIn() && resource.data.authorUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(ideaId)
+        && isValidIdea(incoming(), ideaId)
+        && incoming().authorUid == request.auth.uid
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && incoming().status == 'open'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(ideaId)
+        && isValidIdea(incoming(), ideaId)
+        && existing().authorUid == request.auth.uid
+        && existing().status != 'archived'
+        && incoming().id == existing().id
+        && incoming().authorUid == existing().authorUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'summary', 'domain', 'difficulty', 'status', 'updatedAt']);
+
+      allow delete: if isVerifiedUser()
+        && isValidId(ideaId)
+        && existing().authorUid == request.auth.uid;
+    }
+
+    // Points ledger entries (owner-only read; server/system managed)
+    match /points/{txId} {
+      allow get: if isSignedIn() && isValidId(txId) && existing().userUid == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userUid == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+  }
+}

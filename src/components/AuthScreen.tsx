@@ -1,6 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { signInWithPopup } from 'firebase/auth';
 import { ArrowRight, Eye, EyeOff, GraduationCap, Lock, Mail, User } from 'lucide-react';
-import { fetchAuthProviders, loginWithEmail, registerWithEmail } from '../api';
+import {
+  fetchAuthProviders,
+  loginWithEmail,
+  registerWithEmail,
+  syncFirebaseSession,
+} from '../api';
+import { auth, googleProvider } from '../firebase';
 import type { AuthProvidersInfo, UserProfile } from '../types';
 
 interface AuthScreenProps {
@@ -58,18 +65,47 @@ export function AuthScreen({ onAuthenticated, contextMessage }: AuthScreenProps)
     );
   }
 
-  function handleGoogleClick() {
+  async function handleGoogleClick() {
     setError(null);
-    if (providers?.googleEnabled && providers.supabaseUrl) {
-      const redirectTo = encodeURIComponent(window.location.origin);
-      const oauthUrl = `${providers.supabaseUrl.replace(/\/$/, '')}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`;
-      window.location.assign(oauthUrl);
-      return;
-    }
+    setGoogleNotice(null);
+    setSubmitting(true);
 
-    setGoogleNotice(
-      'Google sign-in activates once SUPABASE_URL and SUPABASE_ANON_KEY are configured in environment secrets. Use email sign-up below to start immediately.'
-    );
+    try {
+      if (providers?.firebaseGoogleEnabled !== false) {
+        const credential = await signInWithPopup(auth, googleProvider);
+        const idToken = await credential.user.getIdToken();
+        const result = await syncFirebaseSession(idToken);
+        onAuthenticated(result.user);
+        return;
+      }
+
+      if (providers?.googleEnabled && providers.supabaseUrl) {
+        const redirectTo = encodeURIComponent(window.location.origin);
+        const oauthUrl = `${providers.supabaseUrl.replace(/\/$/, '')}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`;
+        window.location.assign(oauthUrl);
+        return;
+      }
+
+      setGoogleNotice(
+        'Google sign-in is not active in this environment. Use email sign-up below to start immediately.'
+      );
+    } catch (err) {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        setGoogleNotice('Google sign-in popup was closed before completing.');
+      } else if (code === 'auth/unauthorized-domain') {
+        setError(
+          'Add this domain under Firebase Console -> Authentication -> Settings -> Authorized domains.'
+        );
+      } else {
+        setError(err instanceof Error ? err.message : 'Google sign-in failed.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -339,8 +375,9 @@ export function AuthScreen({ onAuthenticated, contextMessage }: AuthScreenProps)
 
           <button
             type="button"
+            disabled={submitting}
             onClick={handleGoogleClick}
-            className="flex min-h-[46px] w-full items-center justify-center gap-2.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 transition-colors hover:bg-slate-50"
+            className="flex min-h-[46px] w-full items-center justify-center gap-2.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 transition-colors hover:bg-slate-50 disabled:opacity-60"
           >
             <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
               <path
@@ -360,7 +397,7 @@ export function AuthScreen({ onAuthenticated, contextMessage }: AuthScreenProps)
                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
               />
             </svg>
-            <span>Continue with Google</span>
+            <span>Continue with Google (Firebase Auth)</span>
           </button>
 
           {googleNotice && (

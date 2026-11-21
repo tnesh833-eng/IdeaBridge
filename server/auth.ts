@@ -1,6 +1,11 @@
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import { getUserProfileById, type PublicUserProfile } from './db.ts';
+import {
+  getUserProfileById,
+  upsertUserFromFirebase,
+  type PublicUserProfile,
+} from './db.ts';
+import { verifyFirebaseIdToken } from './firebaseAuth.ts';
 
 // Keep secret strictly on the server; fall back to ephemeral 32-byte key in dev preview
 const SESSION_SECRET =
@@ -12,6 +17,7 @@ const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface AuthenticatedRequest extends Request {
   authUser?: PublicUserProfile;
+  authSource?: 'firebase' | 'session';
 }
 
 export function hashPassword(password: string): string {
@@ -94,48 +100,70 @@ function extractBearerToken(req: Request): string | null {
   return token.length > 0 ? token : null;
 }
 
-export function optionalAuth(
+async function resolveUserFromToken(
+  token: string
+): Promise<{ user: PublicUserProfile; source: 'firebase' | 'session' } | null> {
+  // 1. Check local HMAC token (2-part encoded.signature)
+  const parts = token.split('.');
+  if (parts.length === 2) {
+    const payload = verifySessionToken(token);
+    if (!payload) return null;
+    const user = getUserProfileById(payload.sub);
+    return user ? { user, source: 'session' } : null;
+  }
+
+  // 2. Check Firebase Auth JWT ID Token (3-part header.payload.signature)
+  if (parts.length === 3) {
+    const decoded = await verifyFirebaseIdToken(token);
+    if (!decoded || !decoded.uid || !decoded.email) {
+      return null;
+    }
+    const user = upsertUserFromFirebase({
+      uid: decoded.uid,
+      email: decoded.email,
+      name: typeof decoded.name === 'string' ? decoded.name : undefined,
+    });
+    return { user, source: 'firebase' };
+  }
+
+  return null;
+}
+
+export async function optionalAuth(
   req: AuthenticatedRequest,
   _res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   const token = extractBearerToken(req);
   if (token) {
-    const payload = verifySessionToken(token);
-    if (payload) {
-      const user = getUserProfileById(payload.sub);
-      if (user) {
-        req.authUser = user;
-      }
+    const resolved = await resolveUserFromToken(token);
+    if (resolved) {
+      req.authUser = resolved.user;
+      req.authSource = resolved.source;
     }
   }
   next();
 }
 
-export function requireAuth(
+export async function requireAuth(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   const token = extractBearerToken(req);
   if (!token) {
     res.status(401).json({ error: 'Authentication required. Please sign in to continue.' });
     return;
   }
 
-  const payload = verifySessionToken(token);
-  if (!payload) {
+  const resolved = await resolveUserFromToken(token);
+  if (!resolved) {
     res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
     return;
   }
 
-  const user = getUserProfileById(payload.sub);
-  if (!user) {
-    res.status(401).json({ error: 'Account not found. Please sign in again.' });
-    return;
-  }
-
-  req.authUser = user;
+  req.authUser = resolved.user;
+  req.authSource = resolved.source;
   next();
 }
 

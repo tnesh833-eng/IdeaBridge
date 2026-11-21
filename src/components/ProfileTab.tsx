@@ -1,9 +1,11 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import {
   Award,
   Bookmark,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  Coins,
   Edit3,
   ExternalLink,
   FolderGit2,
@@ -14,8 +16,8 @@ import {
   Mail,
   Trophy,
 } from 'lucide-react';
-import { updateProfile } from '../api';
-import type { UserProfile } from '../types';
+import { fetchMyPoints, updateProfile } from '../api';
+import type { PointTransactionItem, UserProfile } from '../types';
 import { AuthScreen } from './AuthScreen';
 import { ResumeManagerCard } from './ResumeManagerCard';
 
@@ -45,6 +47,33 @@ export function ProfileTab({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState(false);
+
+  const [showPointsLedger, setShowPointsLedger] = useState(false);
+  const [pointsTransactions, setPointsTransactions] = useState<PointTransactionItem[]>([]);
+  const [loadingPoints, setLoadingPoints] = useState(false);
+  const [pointsError, setPointsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!user || !showPointsLedger) return;
+    let active = true;
+    setLoadingPoints(true);
+    setPointsError(null);
+    fetchMyPoints()
+      .then((data) => {
+        if (active) setPointsTransactions(data.transactions);
+      })
+      .catch((err) => {
+        if (active) {
+          setPointsError(err instanceof Error ? err.message : 'Unable to load points history.');
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingPoints(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [user, user?.points_balance, showPointsLedger]);
 
   if (!user) {
     return (
@@ -143,10 +172,11 @@ export function ProfileTab({
           </span>
         </p>
 
-        {/* Points Balance Banner */}
+        {/* Points Balance Banner & Expandable Points Ledger */}
         <button
           type="button"
-          onClick={onOpenProjects}
+          onClick={() => setShowPointsLedger((prev) => !prev)}
+          aria-expanded={showPointsLedger}
           className="mt-6 flex w-full items-center justify-between rounded-2xl border border-blue-200 bg-gradient-to-r from-[#EAF2FF] via-[#F4F8FF] to-white px-5 py-4 text-left transition-colors hover:border-blue-300"
         >
           <div className="flex items-center gap-3.5">
@@ -154,14 +184,67 @@ export function ProfileTab({
               <Trophy className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-xs font-semibold text-slate-500">Points Balance</p>
+              <p className="text-xs font-semibold text-slate-500">Points Balance & Ledger</p>
               <p className="font-mono text-2xl font-bold text-[#0052CC] tabular-nums">
                 {user.points_balance} <span className="text-sm font-semibold">Points</span>
               </p>
             </div>
           </div>
-          <ChevronRight className="h-5 w-5 text-[#0052CC]" />
+          {showPointsLedger ? (
+            <ChevronDown className="h-5 w-5 text-[#0052CC]" />
+          ) : (
+            <ChevronRight className="h-5 w-5 text-[#0052CC]" />
+          )}
         </button>
+
+        {showPointsLedger && (
+          <div className="mt-3 rounded-2xl border border-blue-100 bg-slate-50/80 p-4 text-left">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="flex items-center gap-1.5 text-xs font-bold tracking-wide text-slate-700 uppercase">
+                <Coins className="h-3.5 w-3.5 text-[#0052CC]" />
+                <span>Points Ledger</span>
+              </h3>
+              <span className="text-xs font-medium text-slate-500">
+                +10 pts per posted idea
+              </span>
+            </div>
+
+            {loadingPoints ? (
+              <p className="mt-3 text-xs text-slate-500">Loading points history...</p>
+            ) : pointsError ? (
+              <p className="mt-3 text-xs text-red-600">{pointsError}</p>
+            ) : pointsTransactions.length === 0 ? (
+              <p className="mt-3 text-xs leading-relaxed text-slate-500">
+                No points transactions yet. Post a student project idea to earn your first +10 points!
+              </p>
+            ) : (
+              <ul className="mt-3 divide-y divide-slate-200/80">
+                {pointsTransactions.map((tx) => (
+                  <li
+                    key={tx.id}
+                    className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold text-slate-800">
+                        {tx.description}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-slate-400">
+                        {new Date(tx.created_at).toLocaleDateString(undefined, {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric',
+                        })}
+                      </p>
+                    </div>
+                    <span className="shrink-0 font-mono text-xs font-bold text-emerald-700 tabular-nums">
+                      +{tx.amount} pts
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Stats Strip */}
         <div className="mt-4 grid grid-cols-3 divide-x divide-slate-200 rounded-2xl border border-slate-200 bg-slate-50/60 py-3.5 text-center">

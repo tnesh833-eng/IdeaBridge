@@ -10,6 +10,7 @@ import type {
   IdeaFeedItem,
   IdeaFullDetail,
   NearbyEventItem,
+  PointTransactionItem,
   SavedSihIdeaWithProblem,
   SihProblemDetail,
   SihProblemListItem,
@@ -92,8 +93,24 @@ export async function loginWithEmail(payload: {
   return result;
 }
 
+export async function syncFirebaseSession(
+  idToken: string
+): Promise<{ user: UserProfile; authProvider: string }> {
+  setAuthToken(idToken);
+  return apiRequest<{ user: UserProfile; authProvider: string }>('/api/auth/firebase', {
+    method: 'POST',
+  });
+}
+
 export async function fetchCurrentUser(): Promise<{ user: UserProfile }> {
   return apiRequest<{ user: UserProfile }>('/api/auth/me');
+}
+
+export async function fetchMyPoints(): Promise<{
+  pointsBalance: number;
+  transactions: PointTransactionItem[];
+}> {
+  return apiRequest<{ pointsBalance: number; transactions: PointTransactionItem[] }>('/api/points');
 }
 
 export async function updateProfile(payload: {

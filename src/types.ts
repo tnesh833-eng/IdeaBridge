@@ -84,8 +84,19 @@ export interface IdeaFullDetail extends IdeaFeedItem {
 export interface AuthProvidersInfo {
   emailEnabled: boolean;
   googleEnabled: boolean;
+  firebaseGoogleEnabled?: boolean;
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
+}
+
+export interface PointTransactionItem {
+  id: string;
+  user_id: string;
+  idea_id: string | null;
+  type: 'earn_post' | 'earn_unlock' | 'portfolio_bonus' | 'bonus' | string;
+  amount: number;
+  description: string;
+  created_at: string;
 }
 
 export interface SihProblemListItem {
