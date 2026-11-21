@@ -1,0 +1,8 @@
+{
+  "name": "IdeaBridge",
+  "description": "Student project idea marketplace to discover, post, and build real-world software ideas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
