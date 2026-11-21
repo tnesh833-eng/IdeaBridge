@@ -33,7 +33,7 @@ IdeaBridge compiles its client frontend into static HTML, CSS, and JavaScript (`
 
 ## Step 2: Configure Firebase Authentication
 
-1. Open the [Firebase Console](https://console.firebase.google.com/) for project `composite-climate-qgxqk`.
+1. Open the [Firebase Console](https://console.firebase.google.com/) for project `ideabridge-dfa51`.
 2. Go to **Build → Authentication → Sign-in method**:
    - Ensure **Google** is enabled.
    - *(Optional)* Enable **Email/Password** if you want Firebase-managed email accounts in addition to the Express email auth endpoint.
@@ -50,7 +50,7 @@ In your Vercel project dashboard (**Settings → Environment Variables**), add:
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `MONGODB_URI` | Yes (Production) | MongoDB Atlas SRV connection string used by `server/mongo.ts` |
-| `FIREBASE_PROJECT_ID` | Yes | `composite-climate-qgxqk` (used by `firebase-admin/auth` to verify ID tokens) |
+| `FIREBASE_PROJECT_ID` | Yes | `ideabridge-dfa51` (used by `firebase-admin/auth` to verify ID tokens) |
 | `SESSION_SECRET` | Yes | Strong random string (`openssl rand -hex 32`) for email auth HMAC tokens |
 | `GEMINI_API_KEY` | Optional | Server-side Gemini API key for SIH Unique Ideas & Bridgey AI |
 | `VITE_GOOGLE_MAPS_API_KEY` | Optional | Browser-restricted Google Maps API key for College Profile maps |
