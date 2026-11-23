@@ -1,115 +1,74 @@
-# Deploying IdeaBridge (Serverless Express + MongoDB + Firebase Auth + Vercel)
+# Deploying & Load-Balancing IdeaBridge
 
-IdeaBridge compiles its client frontend into static HTML, CSS, and JavaScript (`dist/`) while serving all RESTful Express APIs (`/api/*`) as a Node.js **Vercel Serverless Function** (`/api/index.ts`).
-
----
-
-## Architecture Overview
-
-- **Frontend (Static HTML/CSS/JS)**: Built with `npm run build` into `dist/` and served from Vercel's global CDN.
-- **Backend RESTful APIs (Express Serverless)**: Defined in `server/app.ts` and exposed through `api/index.ts` via `vercel.json` rewrites (`/api/(.*) -> /api/index.ts`).
-- **Database (MongoDB + Mongoose)**:
-  - `server/models/User.ts` (`UserModel`) — profiles, skills, bio/portfolio links, resume metadata, points balance.
-  - `server/models/Idea.ts` (`IdeaModel`) — student project ideas with domain, difficulty, and tech stack.
-  - `server/models/PointTransaction.ts` (`PointTransactionModel`) — points ledger entries (`+10` points when posting ideas, unlocks, bonuses).
-  - `server/mongo.ts` — caches the Mongoose connection in `globalThis` across warm Vercel Serverless invocations (`bufferCommands: false`).
-- **Authentication (Firebase Auth)**:
-  - Client authenticates via Firebase Auth SDK (`src/firebase.ts`, `signInWithPopup` with Google).
-  - Express backend verifies Firebase ID tokens server-side using `firebase-admin/auth` (`server/firebaseAuth.ts`) and exchanges them at `POST /api/auth/firebase`.
+IdeaBridge is designed as a **stateless, horizontally scalable full-stack web application** that runs identically across:
+1. **Vercel Edge CDN + Auto-Scaling Serverless Functions** (`/api/index.ts` + `dist/`)
+2. **Multi-Core Node.js Cluster** (`npm run start:cluster`) behind an **Nginx / Cloud Load Balancer** (`nginx.conf`, AWS ALB, Cloudflare, or GCP Load Balancer)
 
 ---
 
-## Step 1: Set Up MongoDB Atlas
+## Load-Balanced Architecture
 
-1. Create a free cluster on [MongoDB Atlas](https://www.mongodb.com/atlas).
-2. Under **Database Access**, create a database user with read/write access to your `ideabridge` database.
-3. Under **Network Access**, allow connections from Vercel's dynamic serverless IPs (`0.0.0.0/0`, or use Atlas Private Endpoints on paid tiers).
-4. Copy your SRV connection string (`MONGODB_URI`), including the database name:
-   ```text
-   mongodb+srv://<username>:<password>@<cluster>.mongodb.net/ideabridge?retryWrites=true&w=majority
-   ```
-
----
-
-## Step 2: Configure Firebase Authentication
-
-1. Open the [Firebase Console](https://console.firebase.google.com/) for project `ideabridge-dfa51`.
-2. Go to **Build → Authentication → Sign-in method**:
-   - Ensure **Google** is enabled.
-   - *(Optional)* Enable **Email/Password** if you want Firebase-managed email accounts in addition to the Express email auth endpoint.
-3. Go to **Build → Authentication → Settings → Authorized domains** and add your deployed Vercel domain(s), e.g.:
-   - `your-app-name.vercel.app`
-   - Any custom domain you attach in Vercel.
+- **Stateless Bearer Token Authentication (`server/auth.ts`)**: Sessions use HMAC-SHA256 signed Bearer tokens verified independently by every worker/instance with zero sticky-session requirement. Set the same `SESSION_SECRET` across all nodes in production.
+- **Shared Database State (`MONGODB_URI` + `server/models/`)**:
+  - `UserModel` — student accounts, skills, portfolio links, points balance
+  - `IdeaModel` — marketplace ideas and search index
+  - `PointTransactionModel` — points ledger entries (`+10` points per posted idea)
+  - `RateLimitModel` — MongoDB TTL-indexed distributed rate-limiter counters shared across all load-balanced nodes
+- **Health & Readiness Probes (`GET /healthz`, `GET /api/health`)**: Returns `{ ok: true, status: "healthy", loadBalancedReady: true, workerPid, instanceId, database }` with `Cache-Control: no-store` for automated load-balancer health checks.
+- **Upstream Keepalive & Graceful Draining (`server.ts`)**: Configures `keepAliveTimeout = 65000ms` / `headersTimeout = 66000ms` (preventing `502 Bad Gateway` errors behind Nginx/ALB) and drains active HTTP connections cleanly on `SIGTERM`/`SIGINT`.
 
 ---
 
-## Step 3: Configure Environment Variables in Vercel
+## Option 1: Multi-Core Cluster + Nginx Load Balancer
 
-In your Vercel project dashboard (**Settings → Environment Variables**), add:
+### 1. Build Static Frontend & Start Multi-Worker Cluster
+```bash
+npm run build
+NODE_ENV=production CLUSTER_WORKERS=4 SESSION_SECRET=<hex-secret> MONGODB_URI=<atlas-uri> npm run start:cluster
+```
+`server/cluster.ts` spawns worker processes balanced across port `3000` and automatically replaces any crashed worker.
 
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `MONGODB_URI` | Yes (Production) | MongoDB Atlas SRV connection string used by `server/mongo.ts` |
-| `FIREBASE_PROJECT_ID` | Yes | `ideabridge-dfa51` (used by `firebase-admin/auth` to verify ID tokens) |
-| `SESSION_SECRET` | Yes | Strong random string (`openssl rand -hex 32`) for email auth HMAC tokens |
-| `GEMINI_API_KEY` | Optional | Server-side Gemini API key for SIH Unique Ideas & Bridgey AI |
-| `VITE_GOOGLE_MAPS_API_KEY` | Optional | Browser-restricted Google Maps API key for College Profile maps |
-| `ADMIN_PASSCODE` | Optional | Passcode required to claim admin access for SIH spreadsheet imports |
+### 2. Run Nginx Reverse Proxy Load Balancer (`nginx.conf`)
+The included `nginx.conf` defines an upstream pool (`upstream ideabridge_cluster`) with:
+- **`least_conn`** routing across backend nodes
+- **Passive failover** (`max_fails=3 fail_timeout=15s`, `proxy_next_upstream error timeout http_502 http_503 http_504`)
+- **Health endpoint** (`/healthz`)
+- **Gzip compression** and **1-year immutable caching** for `/assets/`
+- **`X-Real-IP` / `X-Forwarded-For`** headers consumed by `server/rateLimit.ts`
 
-> Never put secrets in client-side `VITE_*` variables (except public browser-scoped keys like `VITE_GOOGLE_MAPS_API_KEY`).
-
----
-
-## Step 4: Deploy Frontend & Serverless Backend to Vercel
-
-The included `vercel.json` handles both the static frontend build and Express serverless routing automatically:
-
-```json
-{
-  "version": 2,
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "functions": {
-    "api/index.ts": {
-      "maxDuration": 30
-    }
-  },
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.ts" },
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
+To scale across multiple servers or containers, list each backend node inside `upstream ideabridge_cluster` in `nginx.conf`:
+```nginx
+upstream ideabridge_cluster {
+  least_conn;
+  server 10.0.1.11:3000 max_fails=3 fail_timeout=15s;
+  server 10.0.1.12:3000 max_fails=3 fail_timeout=15s;
+  keepalive 64;
 }
 ```
 
-### Option A: Deploy via Vercel CLI
+---
+
+## Option 2: Vercel Global Edge + Auto-Scaling Serverless
+
+Vercel automatically load-balances static `dist/` assets across its global Anycast Edge Network and horizontally scales `/api/index.ts` across concurrent requests.
+
+### Environment Variables in Vercel
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `MONGODB_URI` | Yes (Production) | MongoDB Atlas SRV string for shared Users, Ideas, Points & distributed rate limits |
+| `SESSION_SECRET` | Yes | Shared 64-char hex secret (`openssl rand -hex 32`) across serverless instances |
+| `GEMINI_API_KEY` | Optional | Server-side Gemini API key for SIH Unique Ideas & Bridgey AI |
+| `VITE_GOOGLE_MAPS_API_KEY` | Optional | Browser-restricted Google Maps API key for College Profile maps |
+| `ADMIN_PASSCODE` | Optional | Server-side passcode to claim admin access for SIH imports |
+
+### Deploy
 ```bash
 npm install -g vercel
 vercel login
 vercel --prod
 ```
 
-### Option B: Deploy via GitHub Integration
-1. Push this repository to GitHub.
-2. In Vercel, click **Add New → Project** and import the repository.
-3. Leave **Framework Preset** as **Vite** (`Build Command: npm run build`, `Output Directory: dist`).
-4. Add the Environment Variables from Step 3 and click **Deploy**.
-
----
-
-## Step 5: Verify Production Deployment
-
-After deploying, visit:
+Verify health on the deployed URL:
 ```text
-https://your-app-name.vercel.app/api/health
+GET https://your-app-name.vercel.app/healthz
 ```
-You should see:
-```json
-{
-  "ok": true,
-  "stage": 1,
-  "database": "mongodb",
-  "firebaseAuth": true,
-  "serverlessReady": true
-}
-```
-Sign in with **Continue with Google**, post a project idea, and open **Profile → Points Balance** to confirm `+10` points are persisted in MongoDB and returned by `GET /api/points`.

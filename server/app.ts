@@ -71,7 +71,6 @@ import {
   type AuthenticatedRequest,
 } from './auth.ts';
 import { askBridgeyAssistant } from './bridgeyAi.ts';
-import { isFirebaseServerAuthConfigured } from './firebaseAuth.ts';
 import { connectMongoIfConfigured, isMongoConnected } from './mongo.ts';
 import {
   fetchMongoPointsLedger,
@@ -79,7 +78,7 @@ import {
   syncPointTransactionToMongo,
   syncUserToMongo,
 } from './mongoSync.ts';
-import { createRateLimiter } from './rateLimit.ts';
+import { createRateLimiter, extractClientIp } from './rateLimit.ts';
 import { generateUniqueSihIdeas } from './sihAi.ts';
 import { parseSihSpreadsheet } from './spreadsheet.ts';
 
@@ -218,7 +217,7 @@ export function createExpressApp(): Express {
   app.use('/api/profile/resume', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: '64kb' }));
 
-  // Security headers (preserve iframe embed compatibility; no X-Frame-Options)
+  // Security & load-balancer cache headers (preserve iframe embed compatibility; no X-Frame-Options)
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -226,37 +225,42 @@ export function createExpressApp(): Express {
     next();
   });
 
-  // Lazy serverless MongoDB connection if MONGODB_URI is configured
-  app.use('/api', async (_req: Request, _res: Response, next: NextFunction) => {
+  app.use('/api', async (_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Cache-Control', 'no-store');
     await connectMongoIfConfigured();
     next();
   });
 
   const apiLimiter = createRateLimiter({
+    namespace: 'api',
     windowMs: 60 * 1000,
     maxRequests: 120,
     message: 'Too many requests from this IP. Please pause a moment and try again.',
   });
 
   const authLimiter = createRateLimiter({
+    namespace: 'auth',
     windowMs: 15 * 60 * 1000,
     maxRequests: 25,
     message: 'Too many sign-in attempts. Please wait a few minutes before trying again.',
   });
 
   const writeLimiter = createRateLimiter({
+    namespace: 'write',
     windowMs: 60 * 1000,
     maxRequests: 25,
     message: 'Rate limit reached for submissions. Please wait a minute before posting again.',
   });
 
   const aiLimiter = createRateLimiter({
+    namespace: 'ai',
     windowMs: 60 * 1000,
     maxRequests: 12,
     message: 'AI generation rate limit reached. Please wait a minute and try again.',
   });
 
   const bridgeyUserLimiter = createRateLimiter({
+    namespace: 'bridgey',
     windowMs: 10 * 60 * 1000,
     maxRequests: 15,
     message:
@@ -266,25 +270,31 @@ export function createExpressApp(): Express {
       if (authReq.authUser?.id) {
         return `bridgey-user:${authReq.authUser.id}`;
       }
-      const forwarded = req.headers['x-forwarded-for'];
-      const ip =
-        (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined) ||
-        req.ip ||
-        'unknown';
-      return `bridgey-ip:${ip}`;
+      return `bridgey-ip:${extractClientIp(req)}`;
     },
   });
 
   app.use('/api', apiLimiter);
 
+  const buildHealthPayload = () => ({
+    ok: true,
+    status: 'healthy',
+    stage: 1,
+    database: isMongoConnected() ? 'mongodb' : 'sqlite-preview',
+    serverlessReady: true,
+    loadBalancedReady: true,
+    workerPid: process.pid,
+    instanceId: process.env.INSTANCE_ID || `worker-${process.pid}`,
+    uptimeSeconds: Math.floor(process.uptime()),
+  });
+
+  app.get('/healthz', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(buildHealthPayload());
+  });
+
   app.get('/api/health', (_req: Request, res: Response) => {
-    res.json({
-      ok: true,
-      stage: 1,
-      database: isMongoConnected() ? 'mongodb' : 'sqlite-preview',
-      firebaseAuth: isFirebaseServerAuthConfigured(),
-      serverlessReady: true,
-    });
+    res.json(buildHealthPayload());
   });
 
   app.get('/api/auth/providers', (_req: Request, res: Response) => {
@@ -296,25 +306,10 @@ export function createExpressApp(): Express {
     res.json({
       emailEnabled: true,
       googleEnabled,
-      firebaseGoogleEnabled: isFirebaseServerAuthConfigured(),
       supabaseUrl: googleEnabled ? supabaseUrl : null,
       supabaseAnonKey: googleEnabled ? supabaseAnonKey : null,
     });
   });
-
-  app.post(
-    '/api/auth/firebase',
-    authLimiter,
-    requireAuth,
-    async (req: AuthenticatedRequest, res: Response) => {
-      const user = req.authUser!;
-      await syncUserToMongo(user, { authProvider: 'firebase' });
-      res.json({
-        user,
-        authProvider: req.authSource ?? 'firebase',
-      });
-    }
-  );
 
   app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) => {
     const email = cleanString(req.body?.email).toLowerCase();

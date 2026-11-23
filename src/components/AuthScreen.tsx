@@ -1,14 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { signInWithPopup } from 'firebase/auth';
+import { useState, type FormEvent } from 'react';
 import { ArrowRight, Eye, EyeOff, GraduationCap, Lock, Mail, User } from 'lucide-react';
-import {
-  fetchAuthProviders,
-  loginWithEmail,
-  registerWithEmail,
-  syncFirebaseSession,
-} from '../api';
-import { auth, googleProvider } from '../firebase';
-import type { AuthProvidersInfo, UserProfile } from '../types';
+import { loginWithEmail, registerWithEmail } from '../api';
+import type { UserProfile } from '../types';
 
 interface AuthScreenProps {
   onAuthenticated: (user: UserProfile) => void;
@@ -30,8 +23,6 @@ const BRIDGEY_MASCOT_URL = '/src/assets/images/bridgey_owl_mascot_1795263067390.
 
 export function AuthScreen({ onAuthenticated, contextMessage }: AuthScreenProps) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [providers, setProviders] = useState<AuthProvidersInfo | null>(null);
-  const [googleNotice, setGoogleNotice] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
 
   const [email, setEmail] = useState('');
@@ -45,73 +36,15 @@ export function AuthScreen({ onAuthenticated, contextMessage }: AuthScreenProps)
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    fetchAuthProviders()
-      .then((info) => {
-        if (active) setProviders(info);
-      })
-      .catch(() => {
-        // Email auth remains available
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
   function toggleSuggestedSkill(skill: string) {
     setSelectedSkills((prev) =>
       prev.includes(skill) ? prev.filter((item) => item !== skill) : [...prev, skill]
     );
   }
 
-  async function handleGoogleClick() {
-    setError(null);
-    setGoogleNotice(null);
-    setSubmitting(true);
-
-    try {
-      if (providers?.firebaseGoogleEnabled !== false) {
-        const credential = await signInWithPopup(auth, googleProvider);
-        const idToken = await credential.user.getIdToken();
-        const result = await syncFirebaseSession(idToken);
-        onAuthenticated(result.user);
-        return;
-      }
-
-      if (providers?.googleEnabled && providers.supabaseUrl) {
-        const redirectTo = encodeURIComponent(window.location.origin);
-        const oauthUrl = `${providers.supabaseUrl.replace(/\/$/, '')}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`;
-        window.location.assign(oauthUrl);
-        return;
-      }
-
-      setGoogleNotice(
-        'Google sign-in is not active in this environment. Use email sign-up below to start immediately.'
-      );
-    } catch (err) {
-      const code =
-        typeof err === 'object' && err !== null && 'code' in err
-          ? String((err as { code?: unknown }).code)
-          : '';
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setGoogleNotice('Google sign-in popup was closed before completing.');
-      } else if (code === 'auth/unauthorized-domain') {
-        setError(
-          'Add this domain under Firebase Console -> Authentication -> Settings -> Authorized domains.'
-        );
-      } else {
-        setError(err instanceof Error ? err.message : 'Google sign-in failed.');
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setError(null);
-    setGoogleNotice(null);
     setSubmitting(true);
 
     try {
@@ -366,45 +299,6 @@ export function AuthScreen({ onAuthenticated, contextMessage }: AuthScreenProps)
               <ArrowRight className="h-4 w-4" />
             </button>
           </form>
-
-          <div className="my-5 flex items-center gap-3">
-            <div className="h-px flex-1 bg-slate-200" />
-            <span className="text-xs font-medium text-slate-400">or</span>
-            <div className="h-px flex-1 bg-slate-200" />
-          </div>
-
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={handleGoogleClick}
-            className="flex min-h-[46px] w-full items-center justify-center gap-2.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 transition-colors hover:bg-slate-50 disabled:opacity-60"
-          >
-            <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="#4285F4"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-              />
-              <path
-                fill="#FBBC05"
-                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-              />
-              <path
-                fill="#EA4335"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-              />
-            </svg>
-            <span>Continue with Google (Firebase Auth)</span>
-          </button>
-
-          {googleNotice && (
-            <p className="mt-3 rounded-xl border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-xs leading-relaxed text-blue-900">
-              {googleNotice}
-            </p>
-          )}
         </div>
       </div>
     </div>

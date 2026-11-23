@@ -1,23 +1,41 @@
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import {
+  db,
+  getAppSetting,
   getUserProfileById,
-  upsertUserFromFirebase,
   type PublicUserProfile,
 } from './db.ts';
-import { verifyFirebaseIdToken } from './firebaseAuth.ts';
 
-// Keep secret strictly on the server; fall back to ephemeral 32-byte key in dev preview
-const SESSION_SECRET =
-  process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16
-    ? process.env.SESSION_SECRET
-    : crypto.randomBytes(32).toString('hex');
+// Keep secret strictly on the server. When SESSION_SECRET is unset in dev/cluster preview,
+// atomically persist one shared HMAC key in app_settings so all worker replicas verify tokens identically.
+function resolveSharedSessionSecret(): string {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16) {
+    return process.env.SESSION_SECRET;
+  }
 
+  try {
+    const existing = getAppSetting('cluster_session_secret');
+    if (existing && existing.length >= 32) {
+      return existing;
+    }
+    const candidate = crypto.randomBytes(32).toString('hex');
+    db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)').run(
+      'cluster_session_secret',
+      candidate
+    );
+    return getAppSetting('cluster_session_secret') || candidate;
+  } catch {
+    return crypto.randomBytes(32).toString('hex');
+  }
+}
+
+const SESSION_SECRET = resolveSharedSessionSecret();
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface AuthenticatedRequest extends Request {
   authUser?: PublicUserProfile;
-  authSource?: 'firebase' | 'session';
+  authSource?: 'session';
 }
 
 export function hashPassword(password: string): string {
@@ -100,70 +118,47 @@ function extractBearerToken(req: Request): string | null {
   return token.length > 0 ? token : null;
 }
 
-async function resolveUserFromToken(
-  token: string
-): Promise<{ user: PublicUserProfile; source: 'firebase' | 'session' } | null> {
-  // 1. Check local HMAC token (2-part encoded.signature)
-  const parts = token.split('.');
-  if (parts.length === 2) {
-    const payload = verifySessionToken(token);
-    if (!payload) return null;
-    const user = getUserProfileById(payload.sub);
-    return user ? { user, source: 'session' } : null;
-  }
-
-  // 2. Check Firebase Auth JWT ID Token (3-part header.payload.signature)
-  if (parts.length === 3) {
-    const decoded = await verifyFirebaseIdToken(token);
-    if (!decoded || !decoded.uid || !decoded.email) {
-      return null;
-    }
-    const user = upsertUserFromFirebase({
-      uid: decoded.uid,
-      email: decoded.email,
-      name: typeof decoded.name === 'string' ? decoded.name : undefined,
-    });
-    return { user, source: 'firebase' };
-  }
-
-  return null;
+function resolveUserFromToken(token: string): PublicUserProfile | null {
+  const payload = verifySessionToken(token);
+  if (!payload) return null;
+  return getUserProfileById(payload.sub);
 }
 
-export async function optionalAuth(
+export function optionalAuth(
   req: AuthenticatedRequest,
   _res: Response,
   next: NextFunction
-): Promise<void> {
+): void {
   const token = extractBearerToken(req);
   if (token) {
-    const resolved = await resolveUserFromToken(token);
-    if (resolved) {
-      req.authUser = resolved.user;
-      req.authSource = resolved.source;
+    const user = resolveUserFromToken(token);
+    if (user) {
+      req.authUser = user;
+      req.authSource = 'session';
     }
   }
   next();
 }
 
-export async function requireAuth(
+export function requireAuth(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): Promise<void> {
+): void {
   const token = extractBearerToken(req);
   if (!token) {
     res.status(401).json({ error: 'Authentication required. Please sign in to continue.' });
     return;
   }
 
-  const resolved = await resolveUserFromToken(token);
-  if (!resolved) {
+  const user = resolveUserFromToken(token);
+  if (!user) {
     res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
     return;
   }
 
-  req.authUser = resolved.user;
-  req.authSource = resolved.source;
+  req.authUser = user;
+  req.authSource = 'session';
   next();
 }
 

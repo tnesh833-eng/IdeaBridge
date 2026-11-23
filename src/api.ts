@@ -93,15 +93,6 @@ export async function loginWithEmail(payload: {
   return result;
 }
 
-export async function syncFirebaseSession(
-  idToken: string
-): Promise<{ user: UserProfile; authProvider: string }> {
-  setAuthToken(idToken);
-  return apiRequest<{ user: UserProfile; authProvider: string }>('/api/auth/firebase', {
-    method: 'POST',
-  });
-}
-
 export async function fetchCurrentUser(): Promise<{ user: UserProfile }> {
   return apiRequest<{ user: UserProfile }>('/api/auth/me');
 }

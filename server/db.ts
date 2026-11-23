@@ -433,10 +433,6 @@ const existingUserColNames = new Set(userColumns.map((col) => col.name));
 if (!existingUserColNames.has('role')) {
   db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'");
 }
-if (!existingUserColNames.has('firebase_uid')) {
-  db.exec('ALTER TABLE users ADD COLUMN firebase_uid TEXT');
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid) WHERE firebase_uid IS NOT NULL');
-}
 if (!existingUserColNames.has('bio')) {
   db.exec("ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''");
 }
@@ -1210,58 +1206,6 @@ export function createUser(input: {
   const profile = getUserProfileById(id);
   if (!profile) {
     throw new Error('Failed to load created user profile');
-  }
-  return profile;
-}
-
-export function upsertUserFromFirebase(input: {
-  uid: string;
-  email: string;
-  name?: string;
-  college?: string;
-}): PublicUserProfile {
-  const byUid = db
-    .prepare('SELECT id FROM users WHERE firebase_uid = ?')
-    .get(input.uid) as { id: string } | undefined;
-
-  if (byUid) {
-    return getUserProfileById(byUid.id)!;
-  }
-
-  const normalizedEmail = input.email.trim().toLowerCase();
-  const byEmail = db
-    .prepare('SELECT id FROM users WHERE lower(email) = lower(?)')
-    .get(normalizedEmail) as { id: string } | undefined;
-
-  if (byEmail) {
-    db.prepare('UPDATE users SET firebase_uid = ?, auth_provider = ? WHERE id = ?').run(
-      input.uid,
-      'firebase',
-      byEmail.id
-    );
-    return getUserProfileById(byEmail.id)!;
-  }
-
-  const id = crypto.randomUUID();
-  const createdAt = new Date().toISOString();
-  const role: UserRole = isAdminEmail(normalizedEmail) ? 'admin' : 'student';
-  const safeName = (input.name && input.name.trim().length >= 2
-    ? input.name.trim()
-    : normalizedEmail.split('@')[0] || 'Student Builder'
-  ).slice(0, 80);
-  const safeCollege = (input.college && input.college.trim().length >= 2
-    ? input.college.trim()
-    : 'IdeaBridge Campus'
-  ).slice(0, 120);
-
-  db.prepare(
-    `INSERT INTO users (id, firebase_uid, email, password_hash, auth_provider, role, name, college, skills, points_balance, created_at)
-     VALUES (?, ?, ?, NULL, 'firebase', ?, ?, ?, '[]', 0, ?)`
-  ).run(id, input.uid, normalizedEmail, role, safeName, safeCollege, createdAt);
-
-  const profile = getUserProfileById(id);
-  if (!profile) {
-    throw new Error('Failed to load Firebase user profile');
   }
   return profile;
 }

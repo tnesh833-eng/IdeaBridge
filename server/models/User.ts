@@ -1,10 +1,9 @@
 import mongoose, { Schema, type Document, type Model } from 'mongoose';
 
 export interface IUserDocument extends Document {
-  firebaseUid: string | null;
   email: string;
   passwordHash: string | null;
-  authProvider: 'firebase' | 'email' | 'seed';
+  authProvider: 'email' | 'google' | 'seed';
   role: 'student' | 'admin';
   name: string;
   college: string;
@@ -26,14 +25,6 @@ export interface IUserDocument extends Document {
 
 const UserSchema = new Schema<IUserDocument>(
   {
-    firebaseUid: {
-      type: String,
-      sparse: true,
-      unique: true,
-      trim: true,
-      maxlength: 128,
-      default: null,
-    },
     email: {
       type: String,
       required: true,
@@ -49,8 +40,8 @@ const UserSchema = new Schema<IUserDocument>(
     },
     authProvider: {
       type: String,
-      enum: ['firebase', 'email', 'seed'],
-      default: 'firebase',
+      enum: ['email', 'google', 'seed'],
+      default: 'email',
     },
     role: {
       type: String,

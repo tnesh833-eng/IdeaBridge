@@ -6,7 +6,7 @@ import { UserModel } from './models/User.ts';
 
 export async function syncUserToMongo(
   user: PublicUserProfile,
-  options?: { firebaseUid?: string | null; authProvider?: 'firebase' | 'email' | 'seed' }
+  options?: { authProvider?: 'email' | 'google' | 'seed' }
 ): Promise<void> {
   if (!isMongoConnected()) return;
   try {
@@ -24,9 +24,6 @@ export async function syncUserToMongo(
       ideasPosted: user.ideas_posted,
       projectsBuilt: user.projects_built,
     };
-    if (options?.firebaseUid) {
-      updateDoc.firebaseUid = options.firebaseUid;
-    }
     if (options?.authProvider) {
       updateDoc.authProvider = options.authProvider;
     }
@@ -43,14 +40,12 @@ export async function syncUserToMongo(
 
 export async function syncIdeaToMongo(
   idea: IdeaFullDetail,
-  author: PublicUserProfile,
-  firebaseUid?: string | null
+  author: PublicUserProfile
 ): Promise<void> {
   if (!isMongoConnected()) return;
   try {
     await IdeaModel.create({
       authorId: idea.author_id,
-      authorUid: firebaseUid ?? null,
       authorName: author.name,
       authorCollege: author.college,
       title: idea.title,
@@ -70,14 +65,12 @@ export async function syncIdeaToMongo(
 export async function syncPointTransactionToMongo(
   tx: PointTransactionItem,
   userEmail: string,
-  newPointsBalance: number,
-  firebaseUid?: string | null
+  newPointsBalance: number
 ): Promise<void> {
   if (!isMongoConnected()) return;
   try {
     await PointTransactionModel.create({
       userId: tx.user_id,
-      userUid: firebaseUid ?? null,
       ideaId: tx.idea_id,
       type: tx.type as PointTransactionType,
       amount: tx.amount,

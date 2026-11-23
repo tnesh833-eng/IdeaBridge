@@ -1,9 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { onIdTokenChanged, signOut } from 'firebase/auth';
+import { useEffect, useState } from 'react';
 import { Award, FolderGit2, Home, MapPin, PlusSquare, User } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { setAuthToken, syncFirebaseSession } from './api';
-import { auth } from './firebase';
+import { setAuthToken } from './api';
 import { FeedTab } from './components/FeedTab';
 import { MyProjectsTab } from './components/MyProjectsTab';
 import { NearbyEventsTab } from './components/NearbyEventsTab';
@@ -29,32 +27,10 @@ export default function App() {
   const [postPrefill, setPostPrefill] = useState<PostIdeaPrefill | null>(null);
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
 
-  const hadFirebaseUserRef = useRef(false);
-
   useEffect(() => {
     const handleQuota = () => setMapsQuotaExceeded(true);
     window.addEventListener('gmp-quota-exceeded', handleQuota);
     return () => window.removeEventListener('gmp-quota-exceeded', handleQuota);
-  }, []);
-
-  useEffect(() => {
-    const unsubscribe = onIdTokenChanged(auth, async (fbUser) => {
-      if (fbUser) {
-        hadFirebaseUserRef.current = true;
-        try {
-          const idToken = await fbUser.getIdToken();
-          const res = await syncFirebaseSession(idToken);
-          setUser(res.user);
-        } catch {
-          // Wait for explicit user retry if backend sync fails
-        }
-      } else if (hadFirebaseUserRef.current) {
-        hadFirebaseUserRef.current = false;
-        setAuthToken(null);
-        setUser(null);
-      }
-    });
-    return () => unsubscribe();
   }, []);
 
   function handleAuthenticated(authenticatedUser: UserProfile) {
@@ -81,8 +57,6 @@ export default function App() {
   }
 
   function handleLogout() {
-    hadFirebaseUserRef.current = false;
-    void signOut(auth);
     setAuthToken(null);
     setUser(null);
     setActiveTab('home');

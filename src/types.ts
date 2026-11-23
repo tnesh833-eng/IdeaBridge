@@ -84,7 +84,6 @@ export interface IdeaFullDetail extends IdeaFeedItem {
 export interface AuthProvidersInfo {
   emailEnabled: boolean;
   googleEnabled: boolean;
-  firebaseGoogleEnabled?: boolean;
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
 }

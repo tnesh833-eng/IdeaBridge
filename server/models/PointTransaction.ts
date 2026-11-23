@@ -4,7 +4,6 @@ export type PointTransactionType = 'earn_post' | 'earn_unlock' | 'portfolio_bonu
 
 export interface IPointTransactionDocument extends Document {
   userId: string;
-  userUid: string | null;
   ideaId: string | null;
   type: PointTransactionType;
   amount: number;
@@ -17,11 +16,6 @@ const PointTransactionSchema = new Schema<IPointTransactionDocument>(
     userId: {
       type: String,
       required: true,
-      index: true,
-    },
-    userUid: {
-      type: String,
-      default: null,
       index: true,
     },
     ideaId: {

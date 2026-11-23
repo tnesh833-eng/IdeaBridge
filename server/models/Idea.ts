@@ -2,7 +2,6 @@ import mongoose, { Schema, type Document, type Model } from 'mongoose';
 
 export interface IIdeaDocument extends Document {
   authorId: string;
-  authorUid: string | null;
   authorName: string;
   authorCollege: string;
   title: string;
@@ -22,11 +21,6 @@ const IdeaSchema = new Schema<IIdeaDocument>(
     authorId: {
       type: String,
       required: true,
-      index: true,
-    },
-    authorUid: {
-      type: String,
-      default: null,
       index: true,
     },
     authorName: {
@@ -90,7 +84,10 @@ const IdeaSchema = new Schema<IIdeaDocument>(
     techStack: {
       type: [String],
       default: [],
-      validate: [(arr: string[]) => arr.length >= 1 && arr.length <= 10, '1 to 10 technologies required'],
+      validate: [
+        (arr: string[]) => arr.length >= 1 && arr.length <= 10,
+        '1 to 10 technologies required',
+      ],
     },
   },
   {
